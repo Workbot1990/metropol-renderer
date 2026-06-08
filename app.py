@@ -1,4 +1,5 @@
 import os
+import gc
 import subprocess
 import tempfile
 import uuid
@@ -36,59 +37,69 @@ def wrap_text(draw, text, font, max_width):
     return lines
 
 def create_video(hook_text, untertext_text):
-    width, height = 1080, 1920
+    width, height = 720, 1280
     img = Image.new('RGB', (width, height), (10, 15, 30))
     draw = ImageDraw.Draw(img)
 
     try:
-        font_headline = ImageFont.truetype(FONT_REG, 36)
-        font_hook = ImageFont.truetype(FONT_BOLD, 82)
-        font_untertext = ImageFont.truetype(FONT_REG, 48)
+        font_headline = ImageFont.truetype(FONT_REG, 24)
+        font_hook = ImageFont.truetype(FONT_BOLD, 55)
+        font_untertext = ImageFont.truetype(FONT_REG, 32)
     except:
         font_headline = ImageFont.load_default()
         font_hook = ImageFont.load_default()
         font_untertext = ImageFont.load_default()
 
     # Headline
-    draw.text((width // 2, 140), "METROPOL ERFOLG",
+    draw.text((width // 2, 90), "METROPOL ERFOLG",
               fill=(255, 255, 255), font=font_headline, anchor="mm")
 
     # Hook
     max_w = int(width * 0.82)
     hook_lines = wrap_text(draw, hook_text, font_hook, max_w)
-    line_h = 105
+    line_h = 70
     total_h = len(hook_lines) * line_h
-    start_y = (height // 2) - (total_h // 2) - 80
+    start_y = (height // 2) - (total_h // 2) - 50
     for i, line in enumerate(hook_lines):
         draw.text((width // 2, start_y + i * line_h), line,
                   fill=(255, 255, 255), font=font_hook, anchor="mm")
 
     # Untertext
     u_lines = wrap_text(draw, untertext_text, font_untertext, max_w)
-    u_start = height - 380
+    u_start = height - 260
     for i, line in enumerate(u_lines):
-        draw.text((width // 2, u_start + i * 65), line,
+        draw.text((width // 2, u_start + i * 45), line,
                   fill=(180, 180, 180), font=font_untertext, anchor="mm")
 
-    # Save image and convert to video
+    # Save image
     tmp = tempfile.mkdtemp()
     img_path = os.path.join(tmp, f"{uuid.uuid4()}.png")
     vid_path = os.path.join(tmp, f"{uuid.uuid4()}.mp4")
-    img.save(img_path)
+    img.save(img_path, optimize=True)
 
+    # Free memory before FFmpeg
+    del img
+    del draw
+    gc.collect()
+
+    # Convert to video
     subprocess.run([
         'ffmpeg', '-y', '-loop', '1', '-i', img_path,
-        '-c:v', 'libx264', '-t', '8',
-        '-pix_fmt', 'yuv420p', '-r', '30', vid_path
+        '-c:v', 'libx264', '-t', '8', '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p', '-r', '25', '-crf', '28', vid_path
     ], check=True, capture_output=True)
 
+    # Upload to Cloudinary
     result = cloudinary.uploader.upload(
         vid_path, resource_type='video',
         folder='metropol', public_id=str(uuid.uuid4())
     )
 
+    # Cleanup
     os.remove(img_path)
     os.remove(vid_path)
+    gc.collect()
+
     return result['secure_url']
 
 @app.route('/render', methods=['POST'])
