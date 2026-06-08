@@ -85,8 +85,11 @@ def create_video(hook_text, untertext_text):
     # Convert to video
     subprocess.run([
         'ffmpeg', '-y', '-loop', '1', '-i', img_path,
-        '-c:v', 'libx264', '-t', '8', '-preset', 'ultrafast',
-        '-pix_fmt', 'yuv420p', '-r', '25', '-crf', '28', vid_path
+        '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+        '-c:v', 'libx264', '-c:a', 'aac',
+        '-t', '8', '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p', '-r', '25', '-crf', '28',
+        '-shortest', vid_path
     ], check=True, capture_output=True)
 
     # Upload to Cloudinary
