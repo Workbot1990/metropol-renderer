@@ -1,5 +1,7 @@
 import os
 import gc
+import json
+import random
 import subprocess
 import tempfile
 import uuid
@@ -16,8 +18,33 @@ cloudinary.config(
     api_secret=os.environ.get('CLOUDINARY_API_SECRET')
 )
 
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"
+VIDEOS_DIR = '/app/videos'
+FONT_BOLD = '/app/fonts/PlayfairDisplay-Bold.ttf'
+FONT_REG = '/app/fonts/PlayfairDisplay-Regular.ttf'
+FALLBACK_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'
+FALLBACK_REG = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
+
+def get_font(bold=False, size=60):
+    path = FONT_BOLD if bold else FONT_REG
+    fallback = FALLBACK_BOLD if bold else FALLBACK_REG
+    try:
+        return ImageFont.truetype(path, size)
+    except:
+        try:
+            return ImageFont.truetype(fallback, size)
+        except:
+            return ImageFont.load_default()
+
+def get_video_dimensions(video_path):
+    result = subprocess.run([
+        'ffprobe', '-v', 'quiet', '-print_format', 'json',
+        '-show_streams', video_path
+    ], capture_output=True, text=True)
+    info = json.loads(result.stdout)
+    for s in info['streams']:
+        if s['codec_type'] == 'video':
+            return s['width'], s['height']
+    return 1080, 1920
 
 def wrap_text(draw, text, font, max_width):
     words = text.split()
@@ -36,71 +63,73 @@ def wrap_text(draw, text, font, max_width):
         lines.append(' '.join(current))
     return lines
 
-def create_video(hook_text, untertext_text):
-    width, height = 720, 1280
-    img = Image.new('RGB', (width, height), (10, 15, 30))
-    draw = ImageDraw.Draw(img)
+def create_text_overlay(hook_text, untertext_text, width, height):
+    overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-    try:
-        font_headline = ImageFont.truetype(FONT_REG, 24)
-        font_hook = ImageFont.truetype(FONT_BOLD, 55)
-        font_untertext = ImageFont.truetype(FONT_REG, 32)
-    except:
-        font_headline = ImageFont.load_default()
-        font_hook = ImageFont.load_default()
-        font_untertext = ImageFont.load_default()
-
-    # Headline
-    draw.text((width // 2, 90), "METROPOL ERFOLG",
-              fill=(255, 255, 255), font=font_headline, anchor="mm")
-
-    # Hook
     max_w = int(width * 0.82)
-    hook_lines = wrap_text(draw, hook_text, font_hook, max_w)
-    line_h = 70
+    scale = width / 1080
+
+    # Hook text
+    hook_font = get_font(bold=True, size=int(72 * scale))
+    hook_lines = wrap_text(draw, hook_text, hook_font, max_w)
+    line_h = int(90 * scale)
     total_h = len(hook_lines) * line_h
-    start_y = (height // 2) - (total_h // 2) - 50
+    hook_start_y = int(height * 0.38) - total_h // 2
     for i, line in enumerate(hook_lines):
-        draw.text((width // 2, start_y + i * line_h), line,
-                  fill=(255, 255, 255), font=font_hook, anchor="mm")
+        draw.text((width // 2, hook_start_y + i * line_h), line,
+                  fill=(255, 255, 255, 255), font=hook_font, anchor='mm')
 
     # Untertext
-    u_lines = wrap_text(draw, untertext_text, font_untertext, max_w)
-    u_start = height - 260
+    untertext_font = get_font(bold=False, size=int(44 * scale))
+    u_lines = wrap_text(draw, untertext_text, untertext_font, max_w)
+    u_start = int(height * 0.75)
     for i, line in enumerate(u_lines):
-        draw.text((width // 2, u_start + i * 45), line,
-                  fill=(180, 180, 180), font=font_untertext, anchor="mm")
+        draw.text((width // 2, u_start + i * int(58 * scale)), line,
+                  fill=(200, 200, 200, 255), font=untertext_font, anchor='mm')
 
-    # Save image
+    return overlay
+
+def create_video(hook_text, untertext_text):
+    # Pick random base video
+    videos = [f for f in os.listdir(VIDEOS_DIR) if f.endswith('.mp4')]
+    if not videos:
+        raise Exception('No base videos found in /app/videos/')
+    base_video = random.choice(videos)
+    base_path = os.path.join(VIDEOS_DIR, base_video)
+
+    # Get dimensions
+    width, height = get_video_dimensions(base_path)
+
+    # Create overlay
+    overlay = create_text_overlay(hook_text, untertext_text, width, height)
+
     tmp = tempfile.mkdtemp()
-    img_path = os.path.join(tmp, f"{uuid.uuid4()}.png")
-    vid_path = os.path.join(tmp, f"{uuid.uuid4()}.mp4")
-    img.save(img_path, optimize=True)
+    overlay_path = os.path.join(tmp, f'{uuid.uuid4()}.png')
+    output_path = os.path.join(tmp, f'{uuid.uuid4()}.mp4')
 
-    # Free memory before FFmpeg
-    del img
-    del draw
+    overlay.save(overlay_path, 'PNG')
+    del overlay
     gc.collect()
 
-    # Convert to video
+    # Composite video + overlay, keep original audio
     subprocess.run([
-        'ffmpeg', '-y', '-loop', '1', '-i', img_path,
-        '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-        '-c:v', 'libx264', '-c:a', 'aac',
-        '-t', '8', '-preset', 'ultrafast',
-        '-pix_fmt', 'yuv420p', '-r', '25', '-crf', '28',
-        '-shortest', vid_path
+        'ffmpeg', '-y',
+        '-i', base_path,
+        '-i', overlay_path,
+        '-filter_complex', '[0:v][1:v]overlay=0:0',
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        '-c:a', 'copy',
+        output_path
     ], check=True, capture_output=True)
 
-    # Upload to Cloudinary
     result = cloudinary.uploader.upload(
-        vid_path, resource_type='video',
+        output_path, resource_type='video',
         folder='metropol', public_id=str(uuid.uuid4())
     )
 
-    # Cleanup
-    os.remove(img_path)
-    os.remove(vid_path)
+    os.remove(overlay_path)
+    os.remove(output_path)
     gc.collect()
 
     return result['secure_url']
