@@ -110,13 +110,12 @@ def create_video(hook_text, untertext_text):
     del overlay
     gc.collect()
 
-    # Composite with fade-in effect for text
+    # Composite video + text overlay
     subprocess.run([
         'ffmpeg', '-y',
         '-i', base_path,
         '-i', overlay_path,
-        '-filter_complex',
-        '[1:v]fade=t=in:st=0.8:d=1.0:alpha=1[ov];[0:v][ov]overlay=0:0',
+        '-filter_complex', '[0:v][1:v]overlay=0:0',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
         '-c:a', 'copy',
         output_path
