@@ -26,6 +26,11 @@ FONT_REG = os.path.join(FONTS_DIR, 'PlayfairDisplay-Regular.ttf')
 FALLBACK_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'
 FALLBACK_REG = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
 
+# Fade-In Einstellungen (Sekunden)
+HOOK_FADE_START = 0.3      # wann der Hook anfaengt einzublenden
+HOOK_FADE_DURATION = 0.8   # wie lange das Einblenden dauert
+
+
 def get_font(bold=False, size=60):
     path = FONT_BOLD if bold else FONT_REG
     fallback = FALLBACK_BOLD if bold else FALLBACK_REG
@@ -37,6 +42,7 @@ def get_font(bold=False, size=60):
         except:
             return ImageFont.load_default()
 
+
 def get_video_dimensions(video_path):
     result = subprocess.run([
         'ffprobe', '-v', 'quiet', '-print_format', 'json',
@@ -47,6 +53,7 @@ def get_video_dimensions(video_path):
         if s['codec_type'] == 'video':
             return s['width'], s['height']
     return 1080, 1920
+
 
 def wrap_text(draw, text, font, max_width):
     words = text.split()
@@ -65,13 +72,13 @@ def wrap_text(draw, text, font, max_width):
         lines.append(' '.join(current))
     return lines
 
-def create_text_overlay(hook_text, untertext_text, width, height):
+
+def create_hook_overlay(hook_text, width, height):
     overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     max_w = int(width * 0.82)
     scale = width / 1080
 
-    # Hook text - bold, centered, upper middle
     hook_font = get_font(bold=True, size=int(68 * scale))
     hook_lines = wrap_text(draw, hook_text, hook_font, max_w)
     line_h = int(85 * scale)
@@ -81,7 +88,15 @@ def create_text_overlay(hook_text, untertext_text, width, height):
         draw.text((width // 2, hook_start_y + i * line_h), line,
                   fill=(255, 255, 255, 255), font=hook_font, anchor='mm')
 
-    # Untertext - regular, lower area
+    return overlay
+
+
+def create_untertext_overlay(untertext_text, width, height):
+    overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    max_w = int(width * 0.82)
+    scale = width / 1080
+
     untertext_font = get_font(bold=False, size=int(40 * scale))
     u_lines = wrap_text(draw, untertext_text, untertext_font, max_w)
     u_start = int(height * 0.76)
@@ -90,6 +105,7 @@ def create_text_overlay(hook_text, untertext_text, width, height):
                   fill=(200, 200, 200, 255), font=untertext_font, anchor='mm')
 
     return overlay
+
 
 def create_video(hook_text, untertext_text):
     videos = [f for f in os.listdir(VIDEOS_DIR) if f.endswith('.mp4')]
@@ -100,22 +116,34 @@ def create_video(hook_text, untertext_text):
 
     width, height = get_video_dimensions(base_path)
 
-    overlay = create_text_overlay(hook_text, untertext_text, width, height)
-
     tmp = tempfile.mkdtemp()
-    overlay_path = os.path.join(tmp, f'{uuid.uuid4()}.png')
+    hook_path = os.path.join(tmp, f'{uuid.uuid4()}_hook.png')
+    sub_path = os.path.join(tmp, f'{uuid.uuid4()}_sub.png')
     output_path = os.path.join(tmp, f'{uuid.uuid4()}.mp4')
 
-    overlay.save(overlay_path, 'PNG')
-    del overlay
+    hook_overlay = create_hook_overlay(hook_text, width, height)
+    hook_overlay.save(hook_path, 'PNG')
+    del hook_overlay
+
+    sub_overlay = create_untertext_overlay(untertext_text, width, height)
+    sub_overlay.save(sub_path, 'PNG')
+    del sub_overlay
     gc.collect()
 
-    # Composite video + text overlay
+    # Hook wird per Alpha-Fade eingeblendet, Untertext bleibt statisch
+    filter_complex = (
+        f'[1:v]format=rgba,'
+        f'fade=t=in:st={HOOK_FADE_START}:d={HOOK_FADE_DURATION}:alpha=1[hook];'
+        f'[0:v][hook]overlay=0:0:shortest=1[tmp];'
+        f'[tmp][2:v]overlay=0:0'
+    )
+
     subprocess.run([
         'ffmpeg', '-y',
         '-i', base_path,
-        '-i', overlay_path,
-        '-filter_complex', '[0:v][1:v]overlay=0:0',
+        '-loop', '1', '-i', hook_path,
+        '-i', sub_path,
+        '-filter_complex', filter_complex,
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
         '-c:a', 'copy',
         output_path
@@ -126,11 +154,13 @@ def create_video(hook_text, untertext_text):
         folder='metropol', public_id=str(uuid.uuid4())
     )
 
-    os.remove(overlay_path)
+    os.remove(hook_path)
+    os.remove(sub_path)
     os.remove(output_path)
     gc.collect()
 
     return result['secure_url']
+
 
 @app.route('/render', methods=['POST'])
 def render():
@@ -145,9 +175,11 @@ def render():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
