@@ -18,9 +18,11 @@ cloudinary.config(
     api_secret=os.environ.get('CLOUDINARY_API_SECRET')
 )
 
-VIDEOS_DIR = '/app/videos'
-FONT_BOLD = '/app/fonts/PlayfairDisplay-Bold.ttf'
-FONT_REG = '/app/fonts/PlayfairDisplay-Regular.ttf'
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+VIDEOS_DIR = os.path.join(BASE_DIR, 'videos')
+FONTS_DIR = os.path.join(BASE_DIR, 'fonts')
+FONT_BOLD = os.path.join(FONTS_DIR, 'PlayfairDisplay-Bold.ttf')
+FONT_REG = os.path.join(FONTS_DIR, 'PlayfairDisplay-Regular.ttf')
 FALLBACK_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'
 FALLBACK_REG = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
 
@@ -66,42 +68,38 @@ def wrap_text(draw, text, font, max_width):
 def create_text_overlay(hook_text, untertext_text, width, height):
     overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-
     max_w = int(width * 0.82)
     scale = width / 1080
 
-    # Hook text
-    hook_font = get_font(bold=True, size=int(72 * scale))
+    # Hook text - bold, centered, upper middle
+    hook_font = get_font(bold=True, size=int(68 * scale))
     hook_lines = wrap_text(draw, hook_text, hook_font, max_w)
-    line_h = int(90 * scale)
+    line_h = int(85 * scale)
     total_h = len(hook_lines) * line_h
-    hook_start_y = int(height * 0.38) - total_h // 2
+    hook_start_y = int(height * 0.40) - total_h // 2
     for i, line in enumerate(hook_lines):
         draw.text((width // 2, hook_start_y + i * line_h), line,
                   fill=(255, 255, 255, 255), font=hook_font, anchor='mm')
 
-    # Untertext
-    untertext_font = get_font(bold=False, size=int(44 * scale))
+    # Untertext - regular, lower area
+    untertext_font = get_font(bold=False, size=int(40 * scale))
     u_lines = wrap_text(draw, untertext_text, untertext_font, max_w)
-    u_start = int(height * 0.75)
+    u_start = int(height * 0.76)
     for i, line in enumerate(u_lines):
-        draw.text((width // 2, u_start + i * int(58 * scale)), line,
+        draw.text((width // 2, u_start + i * int(52 * scale)), line,
                   fill=(200, 200, 200, 255), font=untertext_font, anchor='mm')
 
     return overlay
 
 def create_video(hook_text, untertext_text):
-    # Pick random base video
     videos = [f for f in os.listdir(VIDEOS_DIR) if f.endswith('.mp4')]
     if not videos:
-        raise Exception('No base videos found in /app/videos/')
+        raise Exception(f'No base videos found in {VIDEOS_DIR}')
     base_video = random.choice(videos)
     base_path = os.path.join(VIDEOS_DIR, base_video)
 
-    # Get dimensions
     width, height = get_video_dimensions(base_path)
 
-    # Create overlay
     overlay = create_text_overlay(hook_text, untertext_text, width, height)
 
     tmp = tempfile.mkdtemp()
@@ -112,12 +110,13 @@ def create_video(hook_text, untertext_text):
     del overlay
     gc.collect()
 
-    # Composite video + overlay, keep original audio
+    # Composite with fade-in effect for text
     subprocess.run([
         'ffmpeg', '-y',
         '-i', base_path,
         '-i', overlay_path,
-        '-filter_complex', '[0:v][1:v]overlay=0:0',
+        '-filter_complex',
+        '[1:v]fade=t=in:st=0.8:d=1.0:alpha=1[ov];[0:v][ov]overlay=0:0',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
         '-c:a', 'copy',
         output_path
