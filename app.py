@@ -28,15 +28,18 @@ FALLBACK_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf'
 FALLBACK_REG = '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf'
 
 # ---------- Video ----------
-VIDEO_W = 1080
-VIDEO_H = 1920
+# 720x1280 statt 1080x1920: halbiert den ffmpeg-Speicher (~128 statt ~202 MB),
+# passt damit komfortabel auf den 512-MB-Free-Tier. Fuer Instagram-Reels HD und
+# voellig ausreichend. Bei groesserer Render-Instanz kannst du wieder auf 1080x1920.
+VIDEO_W = 720
+VIDEO_H = 1280
 FPS = 30
 DURATION = 8.0
 
-# ---------- Hintergrund ----------
-BG_C0 = '0x050816'
-BG_C1 = '0x0d1530'
-BG_SPEED = 0.012
+# ---------- Hintergrund (statisch, speicherschonend) ----------
+BG_C0 = '0x050816'   # dunkles Navy (Raender)
+BG_C1 = '0x0d1530'   # etwas heller (Mitte)
+BG_GRAIN = 0.05      # Koernung 0..1 (0 = glatt)
 
 # ---------- Header (fixe Marke, linksbuendig) ----------
 HEADER_TEXT = 'METROPOL ERFOLG'
@@ -217,6 +220,26 @@ def pick_audio():
     return os.path.join(AUDIO_DIR, random.choice(tracks)) if tracks else None
 
 
+def _hex_rgb(h):
+    h = h.replace('0x', '').replace('#', '')
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def build_background(width, height):
+    """Statischer dunkler Radialverlauf + dezente Koernung, als ein Bild."""
+    center = _hex_rgb(BG_C1)
+    edge = _hex_rgb(BG_C0)
+    grad = Image.radial_gradient('L').resize((width, height))  # 0 Mitte, 255 Rand
+    bg = Image.composite(
+        Image.new('RGB', (width, height), edge),
+        Image.new('RGB', (width, height), center),
+        grad)
+    if BG_GRAIN > 0:
+        noise = Image.effect_noise((width, height), 18).convert('L')
+        bg = Image.blend(bg, Image.merge('RGB', (noise, noise, noise)), BG_GRAIN)
+    return bg
+
+
 def get_audio_duration(path):
     try:
         r = subprocess.run(
@@ -243,15 +266,15 @@ def create_video(hook_text, untertext_text):
     del static
     gc.collect()
 
-    seed = random.randint(0, 99999)
-    gradient = (
-        f'gradients=s={VIDEO_W}x{VIDEO_H}:c0={BG_C0}:c1={BG_C1}:c2={BG_C0}'
-        f':nb_colors=3:duration={DURATION}:speed={BG_SPEED}:type=radial:seed={seed}'
-    )
+    bg_path = os.path.join(tmp, 'bg.png')
+    bg = build_background(VIDEO_W, VIDEO_H)
+    bg.save(bg_path, 'PNG')
+    del bg
+    gc.collect()
 
     cmd = [
         'ffmpeg', '-y',
-        '-f', 'lavfi', '-i', gradient,
+        '-loop', '1', '-i', bg_path,
         '-framerate', str(FPS), '-i', hook_pattern,
         '-loop', '1', '-i', static_path,
     ]
@@ -268,8 +291,7 @@ def create_video(hook_text, untertext_text):
             cmd += ['-stream_loop', '-1', '-i', audio_path]
         fade_out = max(0.0, DURATION - AUDIO_FADE)
         fc = (
-            '[0:v]noise=alls=7:allf=t,vignette=PI/4.5[bg];'
-            '[bg][1:v]overlay=0:0:eof_action=repeat[v1];'
+            '[0:v][1:v]overlay=0:0:eof_action=repeat[v1];'
             '[v1][2:v]overlay=0:0[v];'
             f'[3:a]atrim=0:{DURATION},asetpts=N/SR/TB,'
             f'afade=t=in:st=0:d={AUDIO_FADE},afade=t=out:st={fade_out}:d={AUDIO_FADE}[a]'
@@ -277,14 +299,13 @@ def create_video(hook_text, untertext_text):
         cmd += ['-filter_complex', fc, '-map', '[v]', '-map', '[a]']
     else:
         fc = (
-            '[0:v]noise=alls=7:allf=t,vignette=PI/4.5[bg];'
-            '[bg][1:v]overlay=0:0:eof_action=repeat[v1];'
+            '[0:v][1:v]overlay=0:0:eof_action=repeat[v1];'
             '[v1][2:v]overlay=0:0[v]'
         )
         cmd += ['-filter_complex', fc, '-map', '[v]']
 
     cmd += [
-        '-t', str(DURATION), '-r', str(FPS),
+        '-t', str(DURATION), '-r', str(FPS), '-threads', '1',
         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', '-pix_fmt', 'yuv420p',
     ]
     if audio_path:
