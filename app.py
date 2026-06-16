@@ -41,19 +41,21 @@ BG_C0 = '0x050816'   # dunkles Navy (Raender)
 BG_C1 = '0x0d1530'   # etwas heller (Mitte)
 BG_GRAIN = 0.05      # Koernung 0..1 (0 = glatt)
 
-# ---------- Header (fixe Marke, linksbuendig) ----------
+# ---------- Header (fixe Marke) ----------
 HEADER_TEXT = 'METROPOL ERFOLG'
 HEADER_Y = 0.115
-HEADER_X = 0.12          # linker Rand (Anteil der Breite)
-HEADER_SIZE = 34
+HEADER_CENTER = True     # True = zentriert, False = linksbuendig (bei HEADER_X)
+HEADER_X = 0.12          # linker Rand, nur bei HEADER_CENTER = False
+HEADER_SIZE = 36
 HEADER_TRACK = 8         # Sperrung (Buchstabenabstand) bei 1080px
 
 # ---------- Hook: verstreuter Blur-Reveal ----------
-HOOK_SIZE = 82            # Start-Schriftgroesse (wird bei langen Hooks autom. verkleinert)
-HOOK_MIN_SIZE = 46        # Untergrenze beim Auto-Verkleinern
-HOOK_LINE_RATIO = 1.42    # Zeilenhoehe = Schriftgroesse * Ratio
-HOOK_BAND_TOP = 0.22      # Hook bleibt in diesem vertikalen Band (Anteil der Hoehe)
-HOOK_BAND_BOTTOM = 0.66
+HOOK_SIZE = 100           # Start-Schriftgroesse (wird bei langen Hooks autom. verkleinert)
+HOOK_MIN_SIZE = 56        # Untergrenze beim Auto-Verkleinern
+HOOK_MAX_W = 0.88         # genutzte Breite (Anteil), groesser = breitere Zeilen
+HOOK_LINE_RATIO = 1.34    # Zeilenhoehe = Schriftgroesse * Ratio
+HOOK_BAND_TOP = 0.21      # Hook bleibt in diesem vertikalen Band (Anteil der Hoehe)
+HOOK_BAND_BOTTOM = 0.68
 HOOK_REVEAL_START = 0.3   # ab wann Buchstaben starten
 HOOK_REVEAL_SPAN = 3.2    # ueber welchen Zeitraum sie verstreut erscheinen
 HOOK_CHAR_FADE = 0.55     # Schaerf-/Einblendedauer je Buchstabe
@@ -108,14 +110,19 @@ def build_static_overlay(untertext_text, width, height):
     overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
-    # Header linksbuendig mit Sperrung
+    # Header (zentriert oder linksbuendig) mit Sperrung
     hf = get_font(bold=True, size=int(HEADER_SIZE * scale))
     track = int(HEADER_TRACK * scale)
-    x = int(width * HEADER_X)
+    widths = [draw.textlength(ch, font=hf) for ch in HEADER_TEXT]
+    total = sum(widths) + track * (len(HEADER_TEXT) - 1)
+    if HEADER_CENTER:
+        x = width / 2 - total / 2
+    else:
+        x = int(width * HEADER_X)
     y = int(height * HEADER_Y)
-    for ch in HEADER_TEXT:
+    for ch, w in zip(HEADER_TEXT, widths):
         draw.text((x, y), ch, font=hf, fill=(255, 255, 255, 255), anchor='lm')
-        x += draw.textlength(ch, font=hf) + track
+        x += w + track
 
     # Untere Zeile
     bottom = untertext_text if USE_NOTION_UNTERTEXT else SIGNATURE_TEXT
@@ -131,7 +138,7 @@ def build_static_overlay(untertext_text, width, height):
 
 def layout_hook_chars(hook_text, width, height):
     scale = width / 1080
-    max_w = int(width * 0.82)
+    max_w = int(width * HOOK_MAX_W)
     band_top = int(height * HOOK_BAND_TOP)
     band_h = int(height * (HOOK_BAND_BOTTOM - HOOK_BAND_TOP))
     tmp = Image.new('RGBA', (width, height))
@@ -343,6 +350,23 @@ def render():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok'})
+
+
+@app.route('/fontcheck', methods=['GET'])
+def fontcheck():
+    """Zeigt, ob Playfair geladen wird oder der Fallback greift."""
+    info = {}
+    for label, path in [('bold', FONT_BOLD), ('regular', FONT_REG)]:
+        try:
+            f = ImageFont.truetype(path, 40)
+            info[label] = {'loaded': True, 'name': f.getname(), 'path': path}
+        except Exception as e:
+            info[label] = {'loaded': False, 'error': str(e), 'path': path}
+    try:
+        info['fonts_dir'] = sorted(os.listdir(FONTS_DIR))
+    except Exception as e:
+        info['fonts_dir'] = f'error: {e}'
+    return jsonify(info)
 
 
 if __name__ == '__main__':
