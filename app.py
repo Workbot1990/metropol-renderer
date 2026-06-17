@@ -42,7 +42,7 @@ BG_C1 = '0x0d1530'   # etwas heller (Mitte)
 BG_GRAIN = 0.05      # Koernung 0..1 (0 = glatt)
 
 # ---------- Header (fixe Marke) ----------
-HEADER_TEXT = 'METROPOL ERFOLG'
+HEADER_TEXT = ''         # leer = kein eingebrannter Header (IG zeigt Handle+Logo eh oben)
 HEADER_Y = 0.115
 HEADER_CENTER = True     # True = zentriert, False = linksbuendig (bei HEADER_X)
 HEADER_X = 0.12          # linker Rand, nur bei HEADER_CENTER = False
