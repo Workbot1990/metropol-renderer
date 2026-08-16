@@ -7,4 +7,4 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
 RUN mkdir -p /app/videos /app/fonts
-CMD gunicorn app:app --timeout 300 --workers 1
+CMD gunicorn app_v7:app --bind 0.0.0.0:$PORT --timeout 600 --workers 1

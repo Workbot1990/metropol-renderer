@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://metropol-erfolg.local/schemas/content-item.schema.json",
+  "title": "Metropol Erfolg Content Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "content_id",
+    "series",
+    "topic",
+    "audience_problem",
+    "desired_action",
+    "hook",
+    "script",
+    "scenes",
+    "voiceover",
+    "overlays",
+    "caption",
+    "cta",
+    "sources",
+    "assumptions",
+    "calculation",
+    "risk_note",
+    "advice_disclaimer",
+    "fact_check_status",
+    "approval_status",
+    "format_version",
+    "renderer_version",
+    "experiment",
+    "publication",
+    "tracking",
+    "metrics"
+  ],
+  "properties": {
+    "content_id": { "type": "string", "pattern": "^ME-[0-9]{4}-[0-9]{3}$" },
+    "series": {
+      "enum": [
+        "Wo geht noch was?",
+        "Kann ich mir das leisten?",
+        "Anders wohnen",
+        "Legal gestalten",
+        "Objekt unter der Lupe",
+        "Teurer Irrtum",
+        "Von 100.000 Euro Einkommen zu Eigenkapital",
+        "Familienplan München"
+      ]
+    },
+    "topic": { "type": "string", "minLength": 8 },
+    "audience_problem": { "type": "string", "minLength": 10 },
+    "desired_action": { "enum": ["save", "share", "follow", "visit_calculator"] },
+    "hook": { "type": "string", "minLength": 5, "maxLength": 110 },
+    "script": { "type": "string", "minLength": 30 },
+    "scenes": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_seconds", "end_seconds", "purpose", "visual", "on_screen_text"],
+        "properties": {
+          "start_seconds": { "type": "number", "minimum": 0 },
+          "end_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 60 },
+          "purpose": { "enum": ["hook", "strategy", "calculation", "condition", "risk", "cta"] },
+          "visual": { "type": "string", "minLength": 3 },
+          "on_screen_text": { "type": "string", "maxLength": 140 }
+        }
+      }
+    },
+    "voiceover": { "type": "string", "minLength": 20 },
+    "overlays": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "caption": { "type": "string", "minLength": 40 },
+    "cta": { "type": "string", "minLength": 3, "maxLength": 100 },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "publisher", "url", "retrieved_at", "data_as_of", "is_primary"],
+        "properties": {
+          "title": { "type": "string", "minLength": 3 },
+          "publisher": { "type": "string", "minLength": 2 },
+          "url": { "type": "string", "format": "uri" },
+          "retrieved_at": { "type": "string", "format": "date" },
+          "data_as_of": { "type": "string", "minLength": 4 },
+          "is_primary": { "type": "boolean" },
+          "supports": { "type": "string" }
+        }
+      }
+    },
+    "assumptions": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+    "calculation": { "type": "string", "minLength": 3 },
+    "risk_note": { "type": "string", "minLength": 10 },
+    "advice_disclaimer": { "type": "string", "minLength": 10 },
+    "fact_check_status": { "enum": ["draft", "needs_review", "verified", "expired"] },
+    "approval_status": { "enum": ["draft", "editorial_review", "approved", "ready", "published", "rejected"] },
+    "format_version": { "type": "string", "pattern": "^F[0-9]+(\\.[0-9]+)?$" },
+    "renderer_version": { "type": "string", "minLength": 1 },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "hypothesis", "primary_metric"],
+      "properties": {
+        "id": { "type": "string", "minLength": 3 },
+        "hypothesis": { "type": "string", "minLength": 10 },
+        "primary_metric": { "enum": ["reach", "completion_rate", "save_share_rate", "profile_activity_rate", "lead_rate"] }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planned_at", "published_at"],
+      "properties": {
+        "planned_at": { "type": ["string", "null"], "format": "date-time" },
+        "published_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "tracking": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["notion_page_id", "make_run_id", "cloudinary_asset_id", "instagram_media_id"],
+      "properties": {
+        "notion_page_id": { "type": ["string", "null"] },
+        "make_run_id": { "type": ["string", "null"] },
+        "cloudinary_asset_id": { "type": ["string", "null"] },
+        "instagram_media_id": { "type": ["string", "null"] }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["views", "reach", "average_watch_seconds", "completion_rate", "likes", "comments", "saves", "shares", "profile_actions", "followers_gained", "landing_page_clicks", "email_signups", "sales", "revenue_eur"],
+      "properties": {
+        "views": { "type": ["integer", "null"], "minimum": 0 },
+        "reach": { "type": ["integer", "null"], "minimum": 0 },
+        "average_watch_seconds": { "type": ["number", "null"], "minimum": 0 },
+        "completion_rate": { "type": ["number", "null"], "minimum": 0 },
+        "likes": { "type": ["integer", "null"], "minimum": 0 },
+        "comments": { "type": ["integer", "null"], "minimum": 0 },
+        "saves": { "type": ["integer", "null"], "minimum": 0 },
+        "shares": { "type": ["integer", "null"], "minimum": 0 },
+        "profile_actions": { "type": ["integer", "null"], "minimum": 0 },
+        "followers_gained": { "type": ["integer", "null"], "minimum": 0 },
+        "landing_page_clicks": { "type": ["integer", "null"], "minimum": 0 },
+        "email_signups": { "type": ["integer", "null"], "minimum": 0 },
+        "sales": { "type": ["integer", "null"], "minimum": 0 },
+        "revenue_eur": { "type": ["number", "null"], "minimum": 0 }
+      }
+    }
+  }
+}
