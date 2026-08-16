@@ -2,3 +2,4 @@ flask
 pillow
 cloudinary
 gunicorn
+jsonschema[format]
