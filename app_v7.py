@@ -1,12 +1,9 @@
-from flask import Flask, jsonify, request
+from flask import jsonify, request
+from app import app
 from v7_pipeline import V7Error, render, validate_content
 from v8.routes import bp as v8_blueprint
 
-app=Flask(__name__)
 app.register_blueprint(v8_blueprint)
-
-@app.get("/health")
-def health(): return jsonify({"status":"ok","renderer":"premium-v7"})
 
 @app.post("/v7/validate")
 def validate():
