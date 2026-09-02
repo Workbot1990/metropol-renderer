@@ -6,7 +6,11 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from difflib import SequenceMatcher
+from itertools import combinations
+from pathlib import Path
 from typing import Any, Iterable
+
+from PIL import Image
 
 
 @dataclass(frozen=True)
@@ -38,7 +42,12 @@ def _duplicate_score(hook: str, recent_hooks: Iterable[str]) -> float:
     return max((SequenceMatcher(None, normalized, _normal(other)).ratio() for other in recent_hooks), default=0.0)
 
 
-def evaluate_content(record: dict[str, Any], *, recent_hooks: Iterable[str] = ()) -> GateResult:
+def evaluate_content(
+    record: dict[str, Any],
+    *,
+    recent_hooks: Iterable[str] = (),
+    recent_conflict_patterns: Iterable[str] = (),
+) -> GateResult:
     """Block weak, risky, duplicated or unsupported content before production."""
     errors: list[str] = []
     warnings: list[str] = []
@@ -62,6 +71,19 @@ def evaluate_content(record: dict[str, Any], *, recent_hooks: Iterable[str] = ()
     score = _duplicate_score(hook, recent_hooks)
     if score >= 0.86:
         errors.append(f"Hook-Dublette erkannt ({score:.0%})")
+
+    # Fund 2026-08-26 (Projekt-Audit-Pipelinevergleich mit ZwischenAmtUndAnno):
+    # Der Hook-Dublettencheck erkennt nur aehnliche FORMULIERUNGEN, nicht ein
+    # wiederverwendetes zugrundeliegendes Konfliktmuster mit neuen Woertern -
+    # exakt die Luecke, die der eigene Kanal-Audit vom 25.08. als "zu viel
+    # Lexikon, zu wenig Entscheidung, fehlt Konflikt" benannt hat. Analog zur
+    # "verbrauchte Mechanismen"-Sperrliste in ZwischenAmtUndAnno's Channel
+    # Bible (docs/VERBRAUCHTE_KONFLIKTMUSTER.md hier im Projekt).
+    conflict_pattern = _text(record.get("conflict_pattern"))
+    if conflict_pattern:
+        pattern_score = _duplicate_score(conflict_pattern, recent_conflict_patterns)
+        if pattern_score >= 0.80:
+            errors.append(f"Konfliktmuster-Dublette erkannt ({pattern_score:.0%})")
 
     if len(_text(record.get("voiceover"))) < 120:
         errors.append("Voiceover ist zu kurz für ein substanzielles Reel")
@@ -95,6 +117,61 @@ def evaluate_content(record: dict[str, Any], *, recent_hooks: Iterable[str] = ()
         warnings.append("Begriff Steuertrick redaktionell präzisieren")
 
     return GateResult(not errors, tuple(sorted(set(errors))), tuple(sorted(set(warnings))))
+
+
+def _difference_hash(path: Path, *, hash_size: int = 8) -> int:
+    """Pure-Pillow perceptual hash (dHash) - no extra dependency needed.
+
+    Resizes to (hash_size+1) x hash_size, greyscales, and encodes whether each
+    pixel is brighter than its right neighbour as one bit. Robust against the
+    resizing/recompression differences between two separately generated
+    images, unlike a byte-for-byte or SHA-256 comparison.
+    """
+    image = Image.open(path).convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
+    pixels = image.load()
+    bits = 0
+    for row in range(hash_size):
+        for col in range(hash_size):
+            bits = (bits << 1) | int(pixels[col, row] > pixels[col + 1, row])
+    return bits
+
+
+def _hamming_distance(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
+
+
+def evaluate_image_diversity(image_paths: Iterable[Path], *, min_hamming_distance: int = 10) -> GateResult:
+    """Block a reel whose source images are visually near-duplicates.
+
+    Fund 2026-08-26 (Projekt-Audit-Pipelinevergleich mit ZwischenAmtUndAnno):
+    Bisher gab es hier keinerlei Pruefung auf visuelle Aehnlichkeit der
+    generierten Bilder selbst - nur eine Textpruefung, dass die drei
+    Bildprompts unterschiedlich formuliert sind (`daily.py`,
+    `validate_daily_content`). Unterschiedliche Prompts koennen trotzdem
+    sehr aehnliche Bilder liefern. Dieses Gate vergleicht die tatsaechlichen
+    Pixel (Differenz-Hash, hamming-Abstand) paarweise.
+
+    Deckt NICHT ab, dass das Rendering aktuell nur 3 Bilder auf 5 Szenen
+    verteilt (`reel_renderer.py`, `backgrounds[index % len(backgrounds)]`) -
+    das ist eine bewusste Kosten-/Architekturentscheidung (5 statt 3 Bilder
+    pro Reel wuerde die OpenAI-Bildkosten um ~67% erhoehen, siehe
+    `docs/PROJECT_STATUS.md`) und keine, die dieses Gate stillschweigend
+    aendert. Siehe README.md-Abschnitt "Offene Architekturfrage".
+    """
+    paths = list(image_paths)
+    errors: list[str] = []
+    try:
+        hashes = {str(path): _difference_hash(path) for path in paths}
+    except (OSError, ValueError) as exc:
+        return GateResult(False, (f"Bild konnte nicht gelesen werden: {exc}",))
+    for left, right in combinations(hashes.items(), 2):
+        distance = _hamming_distance(left[1], right[1])
+        if distance < min_hamming_distance:
+            errors.append(
+                f"Bilder zu aehnlich (Hamming-Abstand {distance} < {min_hamming_distance}): "
+                f"{Path(left[0]).name} vs. {Path(right[0]).name}"
+            )
+    return GateResult(not errors, tuple(sorted(set(errors))))
 
 
 def evaluate_publication(record: dict[str, Any], *, now: datetime | None = None) -> GateResult:

@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import urllib.request
+from datetime import date
 from functools import wraps
 from pathlib import Path
 
@@ -15,7 +16,16 @@ from flask import Blueprint, jsonify, request
 
 from .captions import write_vtt
 from .clients import ElevenLabsClient, OpenAIImagesClient, OpenAIResponsesClient, V8ClientError
-from .gates import evaluate_content
+from .daily import (
+    ALLOWED_RESEARCH_DOMAINS,
+    content_schema,
+    research_input,
+    research_instructions,
+    slot_from_content_id,
+    validate_daily_content,
+)
+from .gates import evaluate_content, evaluate_image_diversity
+from .ledger import record_reel_cost
 from .post_renderer import render_pages
 from .reel_renderer import render_reel
 
@@ -42,7 +52,7 @@ def require_token(function):
 
 
 def _content_id(value: str) -> str:
-    if not re.fullmatch(r"ME-[0-9]{4}-[0-9]{3}", str(value or "")):
+    if not re.fullmatch(r"ME-[0-9]{4}-[0-9]{3}(?:-[MNA])?", str(value or "")):
         raise ValueError("Ungültige Content-ID")
     return value
 
@@ -72,9 +82,20 @@ def _sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _upload(path: Path, *, folder: str, resource_type: str = "image") -> dict:
+def _upload(path: Path, *, folder: str, resource_type: str = "image", public_id: str | None = None) -> dict:
     import cloudinary.uploader
-    return cloudinary.uploader.upload(str(path), resource_type=resource_type, folder=folder, use_filename=True, unique_filename=True, overwrite=False)
+    options = {
+        "resource_type": resource_type,
+        "folder": folder,
+        "use_filename": public_id is None,
+        "unique_filename": public_id is None,
+        # Deterministic V8 IDs make a retry replace the incomplete prior
+        # attempt instead of creating another asset or failing on a conflict.
+        "overwrite": public_id is not None,
+    }
+    if public_id:
+        options["public_id"] = public_id
+    return cloudinary.uploader.upload(str(path), **options)
 
 
 @bp.get("/health")
@@ -101,8 +122,110 @@ def generate_content():
         schema_name=str(data.get("schema_name") or "metropol_content"),
         schema=data.get("schema") or {},
         max_output_tokens=min(8000, max(500, int(data.get("max_output_tokens") or 5000))),
+        web_search=bool(data.get("web_search")),
+        allowed_domains=tuple(domain for domain in data.get("allowed_domains") or () if domain in ALLOWED_RESEARCH_DOMAINS),
     )
     return jsonify({"status": "draft", "content": result})
+
+
+@bp.post("/daily/prepare")
+@require_token
+def prepare_daily_package():
+    data = request.get_json(force=True)
+    content_id = _content_id(data.get("content_id"))
+    slot = slot_from_content_id(content_id)
+    recent_hooks = [str(value) for value in data.get("recent_hooks") or []][:20]
+    recent_conflict_patterns = [str(value) for value in data.get("recent_conflict_patterns") or []][:20]
+    today = date.today()
+    content = OpenAIResponsesClient().generate_json(
+        instructions=research_instructions(today, slot, recent_conflict_patterns),
+        input_text=research_input(content_id, recent_hooks, slot),
+        schema_name="metropol_daily_package",
+        schema=content_schema(),
+        max_output_tokens=7000,
+        web_search=True,
+        allowed_domains=ALLOWED_RESEARCH_DOMAINS,
+    )
+    contract_errors = validate_daily_content(content, expected_content_id=content_id)
+    gate = evaluate_content(content, recent_hooks=recent_hooks, recent_conflict_patterns=recent_conflict_patterns)
+    if contract_errors or not gate.passed:
+        return jsonify({
+            "status": "blocked",
+            "contract_errors": contract_errors,
+            "gate": gate.to_dict(),
+        }), 422
+
+    WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{content_id}-daily-", dir=WORK_ROOT) as temporary:
+        folder = Path(temporary)
+        images: list[Path] = []
+        source_assets: list[dict] = []
+        image_client = OpenAIImagesClient()
+        for index, prompt in enumerate(content["image_prompts"], 1):
+            image = image_client.generate(
+                prompt=prompt,
+                destination=folder / f"background-{index}.png",
+                project_root=WORK_ROOT,
+                quality=str(data.get("image_quality") or "low"),
+            )
+            images.append(image)
+
+        # Fund 2026-08-26 (Projekt-Audit-Pipelinevergleich mit
+        # ZwischenAmtUndAnno): bisher gab es keine Pruefung, ob die drei
+        # generierten Bilder sich visuell tatsaechlich unterscheiden - nur
+        # dass ihre Text-Prompts unterschiedlich formuliert sind
+        # (validate_daily_content). Analog zu ZwischenAmtUndAnnos
+        # IMAGE-REPEAT-GATE, hier vor dem Upload/Render geprueft.
+        image_gate = evaluate_image_diversity(images)
+        if not image_gate.passed:
+            return jsonify({"status": "blocked", "gate": image_gate.to_dict()}), 422
+
+        for index, image in enumerate(images, 1):
+            uploaded = _upload(image, folder="metropol/v8/source", public_id=f"{content_id}-source-{index}")
+            source_assets.append({"url": uploaded["secure_url"], "public_id": uploaded["public_id"], "sha256": _sha(image)})
+
+        audio, timing = ElevenLabsClient().synthesize_with_timestamps(
+            content["voiceover"],
+            audio_destination=folder / f"{content_id}.mp3",
+            timing_destination=folder / f"{content_id}.json",
+            project_root=WORK_ROOT,
+        )
+        captions = write_vtt(timing, folder / f"{content_id}.vtt")
+        audio_upload = _upload(audio, folder="metropol/v8/audio", resource_type="video", public_id=f"{content_id}-voice")
+        captions_upload = _upload(captions, folder="metropol/v8/captions", resource_type="raw", public_id=f"{content_id}-captions")
+
+        reel = render_reel(
+            content,
+            backgrounds=images,
+            audio=audio,
+            captions=captions,
+            output=folder / f"{content_id}.mp4",
+            root=ROOT,
+            work_root=folder / "render-work",
+        )
+        reel_upload = _upload(reel, folder="metropol/v8/reels", resource_type="video", public_id=f"{content_id}-reel")
+
+        cost = record_reel_cost(
+            content_id,
+            image_calls=len(content["image_prompts"]),
+            voice_characters=len(content["voiceover"]),
+            ledger_path=Path(os.environ.get("METROPOL_V8_LEDGER_PATH", ROOT / "docs" / "V8_KOSTENLEDGER.jsonl")),
+        )
+
+        duration = content["scenes"][-1]["end_seconds"]
+        return jsonify({
+            "status": "qa_passed",
+            "content": content,
+            "source_assets": source_assets,
+            "cost_estimate": cost,
+            "audio": {"url": audio_upload["secure_url"], "public_id": audio_upload["public_id"], "sha256": _sha(audio)},
+            "captions": {"url": captions_upload["secure_url"], "public_id": captions_upload["public_id"], "cues": captions.read_text(encoding="utf-8").count(" --> ")},
+            "reel": {"url": reel_upload["secure_url"], "public_id": reel_upload["public_id"], "sha256": _sha(reel), "width": 720, "height": 1280, "duration_seconds": duration},
+            # The rescue experiment prepares one measurable Reel only. The
+            # separate post endpoint remains available for a later, proven format.
+            "post": None,
+            "qa": {"content": "passed", "sources": "passed", "audio": "passed", "visual": "passed", "compliance": "passed"},
+        })
 
 
 @bp.post("/image/generate")
