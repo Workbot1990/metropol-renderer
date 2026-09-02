@@ -19,6 +19,7 @@ from .clients import ElevenLabsClient, OpenAIImagesClient, OpenAIResponsesClient
 from .daily import (
     ALLOWED_RESEARCH_DOMAINS,
     content_schema,
+    daily_content_id,
     research_input,
     research_instructions,
     slot_from_content_id,
@@ -132,7 +133,10 @@ def generate_content():
 @require_token
 def prepare_daily_package():
     data = request.get_json(force=True)
-    content_id = _content_id(data.get("content_id"))
+    # Make may omit the ID entirely. The server then derives one deterministic
+    # evening experiment for the current calendar day, avoiding fragile
+    # day-of-year formatting in the automation UI.
+    content_id = _content_id(data.get("content_id") or daily_content_id(date.today()))
     slot = slot_from_content_id(content_id)
     recent_hooks = [str(value) for value in data.get("recent_hooks") or []][:20]
     recent_conflict_patterns = [str(value) for value in data.get("recent_conflict_patterns") or []][:20]
