@@ -71,6 +71,8 @@ class OpenAIResponsesClient:
         schema_name: str,
         schema: dict[str, Any],
         max_output_tokens: int = 5000,
+        web_search: bool = False,
+        allowed_domains: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         payload = {
             "model": self.model,
@@ -86,6 +88,13 @@ class OpenAIResponsesClient:
                 }
             },
         }
+        if web_search:
+            tool: dict[str, Any] = {"type": "web_search", "search_context_size": "low"}
+            if allowed_domains:
+                tool["filters"] = {"allowed_domains": list(allowed_domains)}
+            payload["tools"] = [tool]
+            payload["tool_choice"] = "auto"
+            payload["reasoning"] = {"effort": "low"}
         response = _json_request(
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {self.api_key}"},

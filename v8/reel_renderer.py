@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ def _ffmpeg() -> str:
         raise RuntimeError("ffmpeg ist nicht installiert") from exc
 
 
+@lru_cache(maxsize=32)
 def _font(root: Path, size: int, bold: bool = False, serif: bool = False):
     windows = Path("C:/Windows/Fonts")
     names = (["georgiab.ttf", "PlayfairDisplay-Bold.ttf"] if bold else ["georgia.ttf", "PlayfairDisplay-Regular.ttf"]) if serif else (["segoeuib.ttf", "DejaVuSans-Bold.ttf"] if bold else ["segoeui.ttf", "DejaVuSans.ttf"])
@@ -65,8 +67,14 @@ def _captions(path: Path):
     return result
 
 
-def _background(path: Path, width: int, height: int, progress: float):
+def _load_background(path: Path) -> Image.Image:
     source = Image.open(path).convert("RGB")
+    source = ImageEnhance.Color(source).enhance(0.56)
+    source = ImageEnhance.Contrast(source).enhance(1.14)
+    return source
+
+
+def _background(source: Image.Image, width: int, height: int, progress: float):
     zoom = 1.04 + 0.07 * progress
     ratio = width / height
     crop_h = int(source.height / zoom)
@@ -76,9 +84,7 @@ def _background(path: Path, width: int, height: int, progress: float):
         crop_h = int(crop_w / ratio)
     left = max(0, int((source.width - crop_w) * (0.25 + 0.45 * progress)))
     top = max(0, (source.height - crop_h) // 2)
-    image = source.crop((left, top, left + crop_w, top + crop_h)).resize((width, height), Image.Resampling.LANCZOS)
-    image = ImageEnhance.Color(image).enhance(0.56)
-    image = ImageEnhance.Contrast(image).enhance(1.14)
+    image = source.crop((left, top, left + crop_w, top + crop_h)).resize((width, height), Image.Resampling.BILINEAR)
     image = Image.blend(image, Image.new("RGB", image.size, NAVY), 0.36).convert("RGBA")
     return image
 
@@ -135,8 +141,11 @@ def render_reel(content: dict[str, Any], *, backgrounds: list[Path], audio: Path
         frames = temporary / "frames"
         frames.mkdir()
         cues = _captions(captions)
+        prepared_backgrounds = [_load_background(path) for path in backgrounds]
         for index in range(math.ceil(duration * authored_fps)):
-            _frame(content, backgrounds, cues, index / authored_fps, width, height, root).save(frames / f"{index:05d}.jpg", quality=91, subsampling=0)
+            _frame(content, prepared_backgrounds, cues, index / authored_fps, width, height, root).save(
+                frames / f"{index:05d}.jpg", quality=88, subsampling=1, optimize=False
+            )
         silent = temporary / "silent.mp4"
         ffmpeg = _ffmpeg()
         subprocess.run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-framerate", str(authored_fps), "-i", str(frames / "%05d.jpg"), "-r", str(fps), "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p", str(silent)], check=True)
