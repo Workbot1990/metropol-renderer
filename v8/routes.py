@@ -22,6 +22,7 @@ from .daily import (
     ALLOWED_RESEARCH_DOMAINS,
     content_schema,
     daily_content_id,
+    normalize_motion_scene_timing,
     research_input,
     research_instructions,
     slot_from_content_id,
@@ -172,6 +173,7 @@ def prepare_daily_package():
         web_search=True,
         allowed_domains=ALLOWED_RESEARCH_DOMAINS,
     )
+    normalize_motion_scene_timing(content)
     contract_errors = validate_daily_content(content, expected_content_id=content_id)
     gate = evaluate_content(content, recent_hooks=recent_hooks, recent_conflict_patterns=recent_conflict_patterns)
     if contract_errors or not gate.passed:

@@ -26,6 +26,7 @@ SLOT_LABELS = {
     EXPERIMENT_SLOT: "Abendexperiment",
 }
 DAILY_CONTENT_ID_PATTERN = r"^ME-[0-9]{4}-[0-9]{3}-A$"
+MOTION_SCENE_BOUNDARIES = (0.0, 3.5, 7.0, 15.0, 23.0, 32.0, 38.0)
 
 
 def daily_content_id(day: date, slot: str = EXPERIMENT_SLOT) -> str:
@@ -44,6 +45,17 @@ def slot_from_content_id(content_id: str) -> str:
     if not re.fullmatch(DAILY_CONTENT_ID_PATTERN, str(content_id or "")):
         raise ValueError("Daily-Content-ID benötigt einen gültigen Tages-Slot")
     return content_id.rsplit("-", 1)[-1]
+
+
+def normalize_motion_scene_timing(content: dict[str, Any]) -> dict[str, Any]:
+    """Normalize renderer timing without changing researched editorial copy."""
+    scenes = content.get("scenes") or []
+    if len(scenes) != 6:
+        return content
+    for index, scene in enumerate(scenes):
+        scene["start_seconds"] = MOTION_SCENE_BOUNDARIES[index]
+        scene["end_seconds"] = MOTION_SCENE_BOUNDARIES[index + 1]
+    return content
 
 
 def content_schema() -> dict[str, Any]:
@@ -164,6 +176,11 @@ keine Kinder, kein Luxusklischee und kein KI-/Render-Look. Erzeuge in diesem
 Experiment kein Carousel und keinen Zusatz-Post. Verwende genau einen
 sinnvollen CTA mit dem Keyword RECHNER; die Veröffentlichung bleibt bis zur
 menschlichen Freigabe gesperrt.
+
+Verwende genau sechs lückenlose Szenen in dieser Reihenfolge und mit diesen
+Zeitgrenzen: hook 0,0–3,5; strategy 3,5–7,0; calculation 7,0–15,0;
+condition 15,0–23,0; risk 23,0–32,0; cta 32,0–38,0 Sekunden. Damit wechseln
+in den ersten sieben Sekunden zwei Motive, bevor die Rechnung beginnt.
 
 Die Szenen strategy/calculation/condition/risk steigern sich sichtbar: jede
 folgende Szene macht die Aussage konkreter, teurer oder dringlicher als die

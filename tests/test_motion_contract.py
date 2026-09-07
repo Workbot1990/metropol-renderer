@@ -6,7 +6,7 @@ from datetime import date
 
 from jsonschema import validate
 
-from v8.daily import content_schema, daily_content_id, validate_daily_content
+from v8.daily import content_schema, daily_content_id, normalize_motion_scene_timing, validate_daily_content
 
 
 def valid_content() -> dict:
@@ -70,6 +70,21 @@ class MotionContractTests(unittest.TestCase):
         content["scenes"][1]["start_seconds"] = 4.5
         errors = validate_daily_content(content, expected_content_id=content["content_id"])
         self.assertTrue(any("ersten beiden Szenen" in error for error in errors))
+
+    def test_generated_scene_timing_is_normalized_without_changing_copy(self):
+        content = valid_content()
+        original_copy = [scene["on_screen_text"] for scene in content["scenes"]]
+        for index, scene in enumerate(content["scenes"]):
+            scene["start_seconds"] = float(index * 6)
+            scene["end_seconds"] = float((index + 1) * 6)
+
+        normalize_motion_scene_timing(content)
+
+        self.assertEqual(original_copy, [scene["on_screen_text"] for scene in content["scenes"]])
+        self.assertEqual(3.5, content["scenes"][0]["end_seconds"])
+        self.assertEqual(7.0, content["scenes"][1]["end_seconds"])
+        self.assertEqual(38.0, content["scenes"][-1]["end_seconds"])
+        self.assertEqual((), validate_daily_content(content, expected_content_id=content["content_id"]))
 
     def test_repeated_motion_query_is_blocked(self):
         content = valid_content()
