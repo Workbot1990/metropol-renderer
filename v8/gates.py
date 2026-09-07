@@ -151,7 +151,7 @@ def evaluate_image_diversity(image_paths: Iterable[Path], *, min_hamming_distanc
     sehr aehnliche Bilder liefern. Dieses Gate vergleicht die tatsaechlichen
     Pixel (Differenz-Hash, hamming-Abstand) paarweise.
 
-    Deckt NICHT ab, dass das Rendering aktuell nur 3 Bilder auf 5 Szenen
+    Deckt NICHT ab, dass das Rendering aktuell nur 3 Bilder auf 6 Szenen
     verteilt (`reel_renderer.py`, `backgrounds[index % len(backgrounds)]`) -
     das ist eine bewusste Kosten-/Architekturentscheidung (5 statt 3 Bilder
     pro Reel wuerde die OpenAI-Bildkosten um ~67% erhoehen, siehe

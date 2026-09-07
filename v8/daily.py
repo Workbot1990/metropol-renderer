@@ -100,7 +100,7 @@ def content_schema() -> dict[str, Any]:
             "risk_note": {"type": "string", "minLength": 30, "maxLength": 500},
             "advice_disclaimer": {"type": "string", "minLength": 25, "maxLength": 180},
             "sources": {"type": "array", "minItems": 1, "maxItems": 3, "items": source},
-            "scenes": {"type": "array", "minItems": 5, "maxItems": 5, "items": scene},
+            "scenes": {"type": "array", "minItems": 6, "maxItems": 6, "items": scene},
             "image_prompts": {
                 "type": "array", "minItems": 3, "maxItems": 3,
                 "items": {"type": "string", "minLength": 30, "maxLength": 500},
@@ -198,7 +198,7 @@ def validate_daily_content(content: dict[str, Any], *, expected_content_id: str)
             errors.append(f"Quelle außerhalb der Primärquellen-Allowlist: {host or 'leer'}")
 
     scenes = content.get("scenes") or []
-    if len(scenes) == 5:
+    if len(scenes) == 6:
         if abs(float(scenes[0].get("start_seconds") or 0)) > 0.05:
             errors.append("Erste Szene muss bei 0 Sekunden beginnen")
         for previous, current in zip(scenes, scenes[1:]):
