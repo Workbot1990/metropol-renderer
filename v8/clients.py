@@ -6,6 +6,7 @@ does not persist credentials and never includes them in exceptions.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import urllib.error
@@ -17,6 +18,16 @@ from typing import Any
 
 class V8ClientError(RuntimeError):
     """An external request failed without exposing credentials."""
+
+
+def _read_json(request: urllib.request.Request, *, timeout: int = 90) -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raise V8ClientError(f"API-Anfrage fehlgeschlagen ({exc.code})") from None
+    except urllib.error.URLError as exc:
+        raise V8ClientError(f"API nicht erreichbar: {exc.reason}") from None
 
 
 def _required_env(name: str) -> str:
@@ -108,6 +119,103 @@ class OpenAIResponsesClient:
                     except json.JSONDecodeError as exc:
                         raise V8ClientError("OpenAI-Antwort war kein gültiges JSON") from exc
         raise V8ClientError("OpenAI-Antwort enthielt keinen auswertbaren Inhalt")
+
+
+class PexelsVideoClient:
+    """Select and download distinct portrait stock clips from the official API."""
+
+    API_URL = "https://api.pexels.com/v1/videos/search"
+
+    def __init__(self) -> None:
+        self.api_key = _required_env("METROPOL_PEXELS_API_KEY")
+
+    def search_and_download(
+        self,
+        *,
+        query: str,
+        role: str,
+        destination: Path,
+        project_root: Path,
+        selection_seed: str,
+        excluded_ids: set[int] | None = None,
+        maximum_bytes: int = 45_000_000,
+    ) -> dict[str, Any]:
+        if len(query.strip()) < 8:
+            raise V8ClientError("Pexels-Suchbegriff ist zu kurz")
+        target = _project_target(destination, project_root)
+        parameters = urllib.parse.urlencode({
+            "query": query,
+            "orientation": "portrait",
+            "size": "medium",
+            "locale": "de-DE",
+            "per_page": 24,
+        })
+        request = urllib.request.Request(
+            f"{self.API_URL}?{parameters}",
+            headers={"Authorization": self.api_key, "User-Agent": "Metropol-Erfolg-V8/1.0"},
+        )
+        payload = _read_json(request)
+        excluded = excluded_ids or set()
+        candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for video in payload.get("videos") or []:
+            try:
+                video_id = int(video["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if video_id in excluded or float(video.get("duration") or 0) < 5:
+                continue
+            files = [
+                item for item in video.get("video_files") or []
+                if item.get("file_type") == "video/mp4"
+                and int(item.get("width") or 0) >= 720
+                and int(item.get("height") or 0) >= 1280
+                and int(item.get("height") or 0) > int(item.get("width") or 0)
+                and str(item.get("link") or "").startswith("https://")
+            ]
+            if not files:
+                continue
+            best_file = min(files, key=lambda item: (int(item.get("height") or 0), int(item.get("width") or 0)))
+            candidates.append((video, best_file))
+        if not candidates:
+            raise V8ClientError(f"Pexels lieferte kein geeignetes Hochkantvideo für Rolle {role}")
+
+        digest = hashlib.sha256(f"{selection_seed}|{role}|{query}".encode("utf-8")).digest()
+        video, video_file = candidates[int.from_bytes(digest[:4], "big") % len(candidates)]
+        direct_url = str(video_file["link"])
+        download = urllib.request.Request(direct_url, headers={"User-Agent": "Metropol-Erfolg-V8/1.0"})
+        try:
+            with urllib.request.urlopen(download, timeout=120) as response, target.open("wb") as handle:
+                total = 0
+                while True:
+                    block = response.read(1024 * 1024)
+                    if not block:
+                        break
+                    total += len(block)
+                    if total > maximum_bytes:
+                        raise V8ClientError("Pexels-Video überschreitet das Größenlimit")
+                    handle.write(block)
+        except urllib.error.HTTPError as exc:
+            target.unlink(missing_ok=True)
+            raise V8ClientError(f"Pexels-Video konnte nicht geladen werden ({exc.code})") from None
+        except urllib.error.URLError as exc:
+            target.unlink(missing_ok=True)
+            raise V8ClientError(f"Pexels-Video ist nicht erreichbar: {exc.reason}") from None
+        if target.stat().st_size < 100_000:
+            target.unlink(missing_ok=True)
+            raise V8ClientError("Pexels-Video ist nicht plausibel")
+
+        user = video.get("user") or {}
+        return {
+            "path": target,
+            "pexels_id": int(video["id"]),
+            "role": role,
+            "page_url": str(video.get("url") or ""),
+            "creator": str(user.get("name") or "Pexels Creator"),
+            "creator_url": str(user.get("url") or ""),
+            "width": int(video_file.get("width") or 0),
+            "height": int(video_file.get("height") or 0),
+            "duration_seconds": float(video.get("duration") or 0),
+        }
 
 
 class OpenAIImagesClient:

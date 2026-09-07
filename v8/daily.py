@@ -79,7 +79,7 @@ def content_schema() -> dict[str, Any]:
             "content_id", "slot", "series", "topic", "risk_class", "editorial_review",
             "fact_check_status", "approval_status", "hook", "voiceover", "caption",
             "calculation", "risk_note", "advice_disclaimer", "sources", "scenes",
-            "image_prompts", "hypothesis", "viewer_promise", "source_notes",
+            "stock_video_queries", "hypothesis", "viewer_promise", "source_notes",
             "conflict_pattern",
         ],
         "properties": {
@@ -94,16 +94,24 @@ def content_schema() -> dict[str, Any]:
             "fact_check_status": {"type": "string", "enum": ["verified"]},
             "approval_status": {"type": "string", "enum": ["approved"]},
             "hook": {"type": "string", "minLength": 8, "maxLength": 110},
-            "voiceover": {"type": "string", "minLength": 300, "maxLength": 850},
+            "voiceover": {"type": "string", "minLength": 300, "maxLength": 700},
             "caption": {"type": "string", "minLength": 180, "maxLength": 1200},
             "calculation": {"type": "string", "minLength": 20, "maxLength": 500},
             "risk_note": {"type": "string", "minLength": 30, "maxLength": 500},
             "advice_disclaimer": {"type": "string", "minLength": 25, "maxLength": 180},
             "sources": {"type": "array", "minItems": 1, "maxItems": 3, "items": source},
             "scenes": {"type": "array", "minItems": 6, "maxItems": 6, "items": scene},
-            "image_prompts": {
-                "type": "array", "minItems": 3, "maxItems": 3,
-                "items": {"type": "string", "minLength": 30, "maxLength": 500},
+            "stock_video_queries": {
+                "type": "array", "minItems": 4, "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["query", "role"],
+                    "properties": {
+                        "query": {"type": "string", "minLength": 8, "maxLength": 90},
+                        "role": {"type": "string", "enum": ["location", "property", "people", "documents"]},
+                    },
+                },
             },
             "hypothesis": {"type": "string", "minLength": 25, "maxLength": 250},
             "viewer_promise": {"type": "string", "minLength": 25, "maxLength": 250},
@@ -145,12 +153,14 @@ green. Verwende keine individuelle Finanz-, Steuer- oder Rechtsberatung, keine
 Garantien und nicht den Begriff Steuertrick. Jede Zahl braucht eine konkrete
 Primärquelle, Datenstand, Annahme und nachvollziehbaren Rechenweg. Trenne
 Förderung, Steuerwirkung, Finanzierung und Liquidität sauber. Das Voice-over
-soll 35 bis 48 Sekunden dauern, erwachsen und natürlich klingen. Vermeide
+soll 34 bis 40 Sekunden dauern, erwachsen und natürlich klingen. Vermeide
 Listenrhythmus, Floskeln und hörbare KI-Satzmuster. Hook und Bildsprache müssen
-sich klar von den mitgegebenen letzten Hooks unterscheiden. Das erste Bild
-muss ein neues Motiv sein und darf nicht dem Startbild des Vortags entsprechen.
-Die drei Bildprompts beschreiben unterschiedliche glaubwürdige deutsche Motive,
-ohne Schrift, Logo, Infografik oder künstlichen Render-Look. Erzeuge in diesem
+sich klar von den mitgegebenen letzten Hooks unterscheiden. Das erste Motiv
+muss neu sein und darf nicht dem Startmotiv des Vortags entsprechen. Erzeuge
+vier unterschiedliche englische Pexels-Suchbegriffe mit genau den Rollen
+location, property, people und documents. Die Rollen people und documents
+müssen sichtbare erwachsene Menschen in echter Handlung zeigen; kein Posieren,
+keine Kinder, kein Luxusklischee und kein KI-/Render-Look. Erzeuge in diesem
 Experiment kein Carousel und keinen Zusatz-Post. Verwende genau einen
 sinnvollen CTA mit dem Keyword RECHNER; die Veröffentlichung bleibt bis zur
 menschlichen Freigabe gesperrt.
@@ -205,12 +215,23 @@ def validate_daily_content(content: dict[str, Any], *, expected_content_id: str)
             if abs(float(previous.get("end_seconds") or 0) - float(current.get("start_seconds") or 0)) > 0.2:
                 errors.append("Szenen müssen lückenlos aufeinander folgen")
         duration = float(scenes[-1].get("end_seconds") or 0)
-        if not 35 <= duration <= 48:
-            errors.append("Reel muss 35 bis 48 Sekunden dauern")
+        if not 34 <= duration <= 40:
+            errors.append("Reel muss 34 bis 40 Sekunden dauern")
         if scenes[0].get("purpose") != "hook" or scenes[-1].get("purpose") != "cta":
             errors.append("Szenenfolge benötigt Hook am Anfang und CTA am Ende")
 
-    prompts = [re.sub(r"\W+", " ", str(value).casefold()).strip() for value in content.get("image_prompts") or []]
-    if len(set(prompts)) != 3:
-        errors.append("Drei unterschiedliche Bildmotive sind erforderlich")
+        first_duration = float(scenes[0].get("end_seconds") or 0) - float(scenes[0].get("start_seconds") or 0)
+        second_duration = float(scenes[1].get("end_seconds") or 0) - float(scenes[1].get("start_seconds") or 0)
+        if not 2.5 <= first_duration <= 4.0 or not 2.5 <= second_duration <= 4.0:
+            errors.append("Die ersten beiden Szenen müssen jeweils 2,5 bis 4 Sekunden dauern")
+        if float(scenes[1].get("end_seconds") or 0) > 8.0:
+            errors.append("In den ersten acht Sekunden sind zwei Motivwechsel erforderlich")
+
+    queries = content.get("stock_video_queries") or []
+    normalized_queries = [re.sub(r"\W+", " ", str(value.get("query") or "").casefold()).strip() for value in queries]
+    roles = [str(value.get("role") or "") for value in queries]
+    if len(set(normalized_queries)) != 4:
+        errors.append("Vier unterschiedliche Video-Suchmotive sind erforderlich")
+    if set(roles) != {"location", "property", "people", "documents"}:
+        errors.append("Video-Rollen müssen location, property, people und documents genau einmal enthalten")
     return tuple(sorted(set(errors)))
