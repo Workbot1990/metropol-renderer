@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 from datetime import date
@@ -15,7 +17,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from .captions import write_vtt
-from .clients import ElevenLabsClient, OpenAIImagesClient, OpenAIResponsesClient, V8ClientError
+from .clients import ElevenLabsClient, OpenAIImagesClient, OpenAIResponsesClient, PexelsVideoClient, V8ClientError
 from .daily import (
     ALLOWED_RESEARCH_DOMAINS,
     content_schema,
@@ -34,7 +36,7 @@ from .reel_renderer import render_reel
 bp = Blueprint("metropol_v8", __name__, url_prefix="/v8")
 ROOT = Path(__file__).resolve().parents[1]
 WORK_ROOT = Path(os.environ.get("METROPOL_V8_WORK_ROOT", ROOT / "work"))
-VERSION = "8.0.0-staging"
+VERSION = "8.1.0-motion"
 
 
 def _authorized() -> bool:
@@ -83,6 +85,22 @@ def _sha(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _probe_video(path: Path) -> dict:
+    completed = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path),
+    ], capture_output=True, text=True)
+    if completed.returncode:
+        raise ValueError("Gerenderte Videodatei konnte nicht geprüft werden")
+    payload = json.loads(completed.stdout)
+    stream = (payload.get("streams") or [{}])[0]
+    return {
+        "width": int(stream.get("width") or 0),
+        "height": int(stream.get("height") or 0),
+        "duration_seconds": round(float((payload.get("format") or {}).get("duration") or 0), 3),
+    }
+
+
 def _upload(path: Path, *, folder: str, resource_type: str = "image", public_id: str | None = None) -> dict:
     import cloudinary.uploader
     options = {
@@ -108,6 +126,7 @@ def health():
             "openai": bool(os.environ.get("METROPOL_OPENAI_API_KEY")),
             "elevenlabs": bool(os.environ.get("METROPOL_ELEVENLABS_API_KEY")),
             "voice": bool(os.environ.get("METROPOL_ELEVENLABS_VOICE_ID")),
+            "pexels": bool(os.environ.get("METROPOL_PEXELS_API_KEY")),
             "webhook_auth": bool(os.environ.get("METROPOL_V8_WEBHOOK_SECRET")),
         },
     })
@@ -133,6 +152,9 @@ def generate_content():
 @require_token
 def prepare_daily_package():
     data = request.get_json(force=True)
+    # Preflight all provider credentials before the first paid generation call.
+    pexels_client = PexelsVideoClient()
+    audio_client = ElevenLabsClient()
     # Make may omit the ID entirely. The server then derives one deterministic
     # evening experiment for the current calendar day, avoiding fragile
     # day-of-year formatting in the automation UI.
@@ -162,33 +184,32 @@ def prepare_daily_package():
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{content_id}-daily-", dir=WORK_ROOT) as temporary:
         folder = Path(temporary)
-        images: list[Path] = []
+        media: list[Path] = []
         source_assets: list[dict] = []
-        image_client = OpenAIImagesClient()
-        for index, prompt in enumerate(content["image_prompts"], 1):
-            image = image_client.generate(
-                prompt=prompt,
-                destination=folder / f"background-{index}.png",
+        excluded_ids = {int(value) for value in data.get("recent_stock_ids") or [] if str(value).isdigit()}
+        selected_ids = set(excluded_ids)
+        role_order = {"location": 0, "people": 1, "property": 2, "documents": 3}
+        queries = sorted(content["stock_video_queries"], key=lambda item: role_order[item["role"]])
+        for index, item in enumerate(queries, 1):
+            result = pexels_client.search_and_download(
+                query=item["query"],
+                role=item["role"],
+                destination=folder / f"motion-{index}.mp4",
                 project_root=WORK_ROOT,
-                quality=str(data.get("image_quality") or "low"),
+                selection_seed=content_id,
+                excluded_ids=selected_ids,
             )
-            images.append(image)
+            selected_ids.add(result["pexels_id"])
+            media.append(result.pop("path"))
+            result["sha256"] = _sha(media[-1])
+            source_assets.append(result)
+        if len({item["pexels_id"] for item in source_assets}) != 4:
+            return jsonify({"status": "blocked", "error": "Vier unterschiedliche Bewegungsvideos erforderlich"}), 422
 
-        # Fund 2026-08-26 (Projekt-Audit-Pipelinevergleich mit
-        # ZwischenAmtUndAnno): bisher gab es keine Pruefung, ob die drei
-        # generierten Bilder sich visuell tatsaechlich unterscheiden - nur
-        # dass ihre Text-Prompts unterschiedlich formuliert sind
-        # (validate_daily_content). Analog zu ZwischenAmtUndAnnos
-        # IMAGE-REPEAT-GATE, hier vor dem Upload/Render geprueft.
-        image_gate = evaluate_image_diversity(images)
-        if not image_gate.passed:
-            return jsonify({"status": "blocked", "gate": image_gate.to_dict()}), 422
+        creators = list(dict.fromkeys(item["creator"] for item in source_assets))
+        content["caption"] = content["caption"].rstrip() + "\n\nVideomaterial: Pexels · " + ", ".join(creators)
 
-        for index, image in enumerate(images, 1):
-            uploaded = _upload(image, folder="metropol/v8/source", public_id=f"{content_id}-source-{index}")
-            source_assets.append({"url": uploaded["secure_url"], "public_id": uploaded["public_id"], "sha256": _sha(image)})
-
-        audio, timing = ElevenLabsClient().synthesize_with_timestamps(
+        audio, timing = audio_client.synthesize_with_timestamps(
             content["voiceover"],
             audio_destination=folder / f"{content_id}.mp3",
             timing_destination=folder / f"{content_id}.json",
@@ -200,23 +221,25 @@ def prepare_daily_package():
 
         reel = render_reel(
             content,
-            backgrounds=images,
+            media=media,
             audio=audio,
             captions=captions,
             output=folder / f"{content_id}.mp4",
             root=ROOT,
             work_root=folder / "render-work",
         )
+        media_qa = _probe_video(reel)
+        if (media_qa["width"], media_qa["height"]) != (720, 1280) or not 30 <= media_qa["duration_seconds"] <= 42:
+            return jsonify({"status": "blocked", "error": "Finales Medien-Q-Gate nicht bestanden", "media_qa": media_qa}), 422
         reel_upload = _upload(reel, folder="metropol/v8/reels", resource_type="video", public_id=f"{content_id}-reel")
 
         cost = record_reel_cost(
             content_id,
-            image_calls=len(content["image_prompts"]),
+            image_calls=0,
             voice_characters=len(content["voiceover"]),
             ledger_path=Path(os.environ.get("METROPOL_V8_LEDGER_PATH", ROOT / "docs" / "V8_KOSTENLEDGER.jsonl")),
         )
 
-        duration = content["scenes"][-1]["end_seconds"]
         return jsonify({
             "status": "qa_passed",
             "content": content,
@@ -224,11 +247,11 @@ def prepare_daily_package():
             "cost_estimate": cost,
             "audio": {"url": audio_upload["secure_url"], "public_id": audio_upload["public_id"], "sha256": _sha(audio)},
             "captions": {"url": captions_upload["secure_url"], "public_id": captions_upload["public_id"], "cues": captions.read_text(encoding="utf-8").count(" --> ")},
-            "reel": {"url": reel_upload["secure_url"], "public_id": reel_upload["public_id"], "sha256": _sha(reel), "width": 720, "height": 1280, "duration_seconds": duration},
+            "reel": {"url": reel_upload["secure_url"], "public_id": reel_upload["public_id"], "sha256": _sha(reel), **media_qa},
             # The rescue experiment prepares one measurable Reel only. The
             # separate post endpoint remains available for a later, proven format.
             "post": None,
-            "qa": {"content": "passed", "sources": "passed", "audio": "passed", "visual": "passed", "compliance": "passed"},
+            "qa": {"content": "passed", "sources": "passed", "audio": "passed", "visual": "passed", "motion": "passed", "compliance": "passed"},
         })
 
 
@@ -276,18 +299,21 @@ def render_reel_route():
     gate = evaluate_content(content, recent_hooks=data.get("recent_hooks") or [])
     if not gate.passed:
         return jsonify({"status": "blocked", "gate": gate.to_dict()}), 422
-    urls = data.get("background_urls") or []
-    if not 1 <= len(urls) <= 5:
-        raise ValueError("Ein bis fünf Hintergründe erforderlich")
+    urls = data.get("media_urls") or data.get("background_urls") or []
+    if len(urls) != 4:
+        raise ValueError("Vier unterschiedliche Bewegungsvideos erforderlich")
     WORK_ROOT.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=f"{content_id}-reel-", dir=WORK_ROOT) as temporary:
         folder = Path(temporary)
-        backgrounds = [_download(url, folder / f"background-{index}.png") for index, url in enumerate(urls, 1)]
+        media = [_download(url, folder / f"motion-{index}.mp4", maximum_bytes=45_000_000) for index, url in enumerate(urls, 1)]
         audio = _download(data.get("audio_url"), folder / "voice.mp3")
         captions = _download(data.get("captions_url"), folder / "voice.vtt")
-        output = render_reel(content, backgrounds=backgrounds, audio=audio, captions=captions, output=folder / f"{content_id}.mp4", root=ROOT, work_root=folder / "render-work")
+        output = render_reel(content, media=media, audio=audio, captions=captions, output=folder / f"{content_id}.mp4", root=ROOT, work_root=folder / "render-work")
+        media_qa = _probe_video(output)
+        if (media_qa["width"], media_qa["height"]) != (720, 1280) or not 30 <= media_qa["duration_seconds"] <= 42:
+            return jsonify({"status": "blocked", "error": "Finales Medien-Q-Gate nicht bestanden", "media_qa": media_qa}), 422
         uploaded = _upload(output, folder="metropol/v8/reels", resource_type="video")
-        return jsonify({"status": "rendered", "url": uploaded["secure_url"], "public_id": uploaded["public_id"], "sha256": _sha(output), "qa": {"width": 720, "height": 1280, "duration_seconds": content["scenes"][-1]["end_seconds"], "has_voiceover": True}})
+        return jsonify({"status": "rendered", "url": uploaded["secure_url"], "public_id": uploaded["public_id"], "sha256": _sha(output), "qa": {**media_qa, "has_voiceover": True}})
 
 
 @bp.post("/post/render")
