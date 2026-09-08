@@ -37,7 +37,13 @@ def _required_env(name: str) -> str:
     return value
 
 
-def _json_request(url: str, *, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+def _json_request(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    provider: str,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -50,10 +56,17 @@ def _json_request(url: str, *, headers: dict[str, str], payload: dict[str, Any])
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         try:
-            message = json.loads(body).get("error", {}).get("message")
+            error = json.loads(body)
+            detail = error.get("detail") or error.get("error") or {}
+            if isinstance(detail, dict):
+                message = detail.get("message") or detail.get("status") or detail.get("code")
+            else:
+                message = str(detail)
         except json.JSONDecodeError:
             message = None
-        raise V8ClientError(f"API-Anfrage fehlgeschlagen ({exc.code}): {message or 'ohne Details'}") from None
+        raise V8ClientError(
+            f"{provider}-Anfrage fehlgeschlagen ({exc.code}): {message or 'ohne Details'}"
+        ) from None
     except urllib.error.URLError as exc:
         raise V8ClientError(f"API nicht erreichbar: {exc.reason}") from None
 
@@ -110,6 +123,7 @@ class OpenAIResponsesClient:
             "https://api.openai.com/v1/responses",
             headers={"Authorization": f"Bearer {self.api_key}"},
             payload=payload,
+            provider="OpenAI",
         )
         for item in response.get("output", []):
             for part in item.get("content", []):
@@ -250,6 +264,7 @@ class OpenAIImagesClient:
                 "output_format": "png",
                 "n": 1,
             },
+            provider="OpenAI Images",
         )
         try:
             encoded = response["data"][0]["b64_json"]
@@ -332,6 +347,7 @@ class ElevenLabsClient:
                     "use_speaker_boost": True,
                 },
             },
+            provider="ElevenLabs",
         )
         try:
             audio = base64.b64decode(response["audio_base64"], validate=True)
