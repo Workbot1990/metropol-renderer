@@ -292,6 +292,33 @@ def generate_audio():
         return jsonify({"status": "generated", "audio_url": audio_upload["secure_url"], "captions_url": captions_upload["secure_url"], "audio_sha256": _sha(audio), "caption_cues": cue_count})
 
 
+@bp.post("/audio/preflight")
+@require_token
+def preflight_audio():
+    """Verify the production voice path without leaving Cloudinary test assets."""
+    data = request.get_json(force=True)
+    content_id = _content_id(data.get("content_id"))
+    text = str(data.get("text") or "").strip()
+    if not 20 <= len(text) <= 120:
+        raise ValueError("Audio-Preflight benötigt 20 bis 120 Zeichen")
+    WORK_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f"{content_id}-audio-preflight-", dir=WORK_ROOT) as temporary:
+        folder = Path(temporary)
+        audio, timing = ElevenLabsClient().synthesize_with_timestamps(
+            text,
+            audio_destination=folder / "voice.mp3",
+            timing_destination=folder / "voice.json",
+            project_root=WORK_ROOT,
+        )
+        captions = write_vtt(timing, folder / "voice.vtt")
+        return jsonify({
+            "status": "passed",
+            "audio_sha256": _sha(audio),
+            "audio_bytes": audio.stat().st_size,
+            "caption_cues": captions.read_text(encoding="utf-8").count(" --> "),
+        })
+
+
 @bp.post("/reel/render")
 @require_token
 def render_reel_route():
